@@ -1,4 +1,3 @@
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Connection;
@@ -62,6 +61,7 @@ public class GameA {
         String jsonData = objectMapper.writeValueAsString(ship);
         System.out.println("\nGame object serialized to JSON string: " + jsonData);
 
+        // Store HMAC to be used in the handler
         String hmac = calculateHMAC(jsonData);
         System.out.println("HMAC: " + hmac);
 
@@ -69,7 +69,9 @@ public class GameA {
         server.createContext("/sendShip", new ShipHandler(jsonData));
         server.createContext("/getHMAC", new HMACHandler(hmac));
         server.setExecutor(Executors.newSingleThreadExecutor());
+        System.out.println("Starting HTTP server...");
         server.start();
+        System.out.println("HTTP server started on port 8000");
     }
 
     static class ShipHandler implements HttpHandler {
@@ -97,9 +99,9 @@ public class GameA {
 
         @Override
         public void handle(HttpExchange exchange) throws IOException {
-            exchange.sendResponseHeaders(200, hmac.getBytes().length);
+            exchange.sendResponseHeaders(200, hmac.length());
             try (OutputStream os = exchange.getResponseBody()) {
-                os.write(hmac.getBytes());
+                os.write(hmac.getBytes(StandardCharsets.UTF_8));
             }
         }
     }
@@ -131,4 +133,7 @@ public class GameA {
         return cipherText.toString();
     }
 }
+
+
+
 

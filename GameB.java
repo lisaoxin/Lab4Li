@@ -1,4 +1,3 @@
-
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.rabbitmq.client.Channel;
 import com.rabbitmq.client.Connection;
@@ -10,6 +9,7 @@ import javax.crypto.spec.SecretKeySpec;
 import java.io.BufferedReader;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -25,6 +25,9 @@ public class GameB {
     private static final String SECRET_KEY = "5lg7fd9sdx0Xq/gXAxRCQENRxVoICE/Q5QSGAtPhcFA=";
     private static final int SHIFT_KEY = 3;
 
+    // Variable to store encrypted message received from RabbitMQ
+    private static String receivedEncryptedMessage;
+
     public static void main(String[] args) throws Exception {
         // Receive the encrypted game object as a flat file data from RabbitMQ
         receiveGameViaRabbitMQ();
@@ -38,15 +41,17 @@ public class GameB {
         factory.setHost("localhost");
         Connection connection = factory.newConnection();
         Channel channel = connection.createChannel();
-
         channel.queueDeclare(QUEUE_NAME, false, false, false, null);
         System.out.println("[*] Waiting for messages. To exit press CTRL+C");
 
         DeliverCallback deliverCallback = (consumerTag, delivery) -> {
             String encryptedData = new String(delivery.getBody(), StandardCharsets.UTF_8);
-            System.out.println("[x] Received encrypted message: " + encryptedData);
+            System.out.println("[x] Received encrypted message from RabbitMQ: " + encryptedData);
 
-            String decryptedData = decrypt(encryptedData, SHIFT_KEY);
+            // Store the received encrypted message
+            receivedEncryptedMessage = encryptedData;
+
+            String decryptedData = decrypt(encryptedData);
             System.out.println("\nDecrypted message: " + decryptedData);
 
             Ship ship = convertFlatFileToShip(decryptedData);
@@ -62,7 +67,7 @@ public class GameB {
         connection.setRequestMethod("POST");
 
         int responseCode = connection.getResponseCode();
-        System.out.println("\nResponse Code: " + responseCode);
+        System.out.println("\nResponse Code from Web Service: " + responseCode);
 
         if (responseCode == HttpURLConnection.HTTP_OK) {
             BufferedReader in = new BufferedReader(new InputStreamReader(connection.getInputStream()));
@@ -75,11 +80,24 @@ public class GameB {
             System.out.println("\nDeserialized ship object: " + ship);
             processShipData(ship);
 
+            // Print the received encrypted message from RabbitMQ
+            if (receivedEncryptedMessage != null) {
+                System.out.println("\nReceived encrypted message from RabbitMQ: " + receivedEncryptedMessage);
+            } else {
+                System.out.println("\nNo encrypted message received from RabbitMQ.");
+            }
+
+            // Wait for 2 seconds before sending the HMAC request
+            Thread.sleep(2000);
+
             URL hmacUrl = new URL(WEB_SERVICE_URL + "/getHMAC");
             HttpURLConnection hmacConnection = (HttpURLConnection) hmacUrl.openConnection();
             hmacConnection.setRequestMethod("POST");
             hmacConnection.setDoOutput(true);
-            hmacConnection.getOutputStream().write(jsonData.getBytes(StandardCharsets.UTF_8));
+            OutputStream os = hmacConnection.getOutputStream();
+            os.write(jsonData.getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            os.close();
 
             int hmacResponseCode = hmacConnection.getResponseCode();
             System.out.println("\nHMAC Response Code: " + hmacResponseCode);
@@ -88,7 +106,7 @@ public class GameB {
                 String receivedHmac = hmacIn.readLine();
                 hmacIn.close();
 
-                String calculatedHmac = calculateHMAC(jsonData, SECRET_KEY);
+                String calculatedHmac = calculateHMAC(jsonData);
                 System.out.println("Received HMAC: " + receivedHmac);
                 System.out.println("Calculated HMAC: " + calculatedHmac);
 
@@ -126,12 +144,12 @@ public class GameB {
         return objectMapper.readValue(jsonData, Ship.class);
     }
 
-    private static String calculateHMAC(String data, String key) {
+    private static String calculateHMAC(String data) {
         try {
             Mac mac = Mac.getInstance(HMAC_SHA256_ALGORITHM);
-            SecretKeySpec secretKeySpec = new SecretKeySpec(key.getBytes(), HMAC_SHA256_ALGORITHM);
+            SecretKeySpec secretKeySpec = new SecretKeySpec(GameB.SECRET_KEY.getBytes(StandardCharsets.UTF_8), HMAC_SHA256_ALGORITHM);
             mac.init(secretKeySpec);
-            byte[] hmacBytes = mac.doFinal(data.getBytes());
+            byte[] hmacBytes = mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
             return Base64.getEncoder().encodeToString(hmacBytes);
         } catch (NoSuchAlgorithmException | InvalidKeyException e) {
             e.printStackTrace();
@@ -139,12 +157,12 @@ public class GameB {
         }
     }
 
-    private static String decrypt(String cipherText, int shift) {
+    private static String decrypt(String cipherText) {
         StringBuilder plainText = new StringBuilder();
         for (char c : cipherText.toCharArray()) {
             if (Character.isLetter(c)) {
                 char base = Character.isLowerCase(c) ? 'a' : 'A';
-                int decryptedChar = c - shift;
+                int decryptedChar = c - GameB.SHIFT_KEY;
                 if (decryptedChar < base) {
                     decryptedChar += 26;
                 }
@@ -155,7 +173,10 @@ public class GameB {
         }
         return plainText.toString();
     }
+
 }
+
+
 
 
 
